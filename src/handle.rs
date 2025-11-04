@@ -216,14 +216,14 @@ impl Handle {
         Ok(BatchWriter::new(self))
     }
 
-    pub(crate) fn start_immediate_transaction(&self) -> rusqlite::Result<OwnedTx> {
+    pub(crate) fn start_immediate_transaction(&self) -> rusqlite::Result<OwnedTx<'_>> {
         self.start_writable_transaction_with_behaviour(TransactionBehavior::Immediate)
     }
 
     pub(crate) fn start_writable_transaction_with_behaviour(
         &self,
         behaviour: TransactionBehavior,
-    ) -> rusqlite::Result<OwnedTx> {
+    ) -> rusqlite::Result<OwnedTx<'_>> {
         Ok(self
             .start_transaction(|conn, handle| {
                 let tx_res = run_blocking(|| {
@@ -242,7 +242,7 @@ impl Handle {
 
     /// Starts a deferred transaction (the default). There is no guaranteed read-only transaction
     /// mode. There might be pragmas that can limit to read only statements.
-    pub fn start_deferred_transaction_for_read(&self) -> rusqlite::Result<OwnedReadTx> {
+    pub fn start_deferred_transaction_for_read(&self) -> rusqlite::Result<OwnedReadTx<'_>> {
         Ok(self
             .start_transaction(|conn, _handle| {
                 let rtx = conn.transaction_with_behavior(TransactionBehavior::Deferred)?;
@@ -255,12 +255,12 @@ impl Handle {
     /// appropriate. I'm not sure about the semantics of doing that yet. This might be useful for
     /// operations that become writes depending on certain conditions, but could violate some
     /// expectations around locking. TBD.
-    pub(crate) fn start_deferred_transaction(&self) -> rusqlite::Result<OwnedTx> {
+    pub(crate) fn start_deferred_transaction(&self) -> rusqlite::Result<OwnedTx<'_>> {
         self.start_writable_transaction_with_behaviour(TransactionBehavior::Deferred)
     }
 
     /// Begins a read transaction.
-    pub fn read(&self) -> rusqlite::Result<Reader<OwnedTx>> {
+    pub fn read(&self) -> rusqlite::Result<Reader<OwnedTx<'_>>> {
         let reader = Reader {
             owned_tx: self
                 .start_writable_transaction_with_behaviour(TransactionBehavior::Immediate)?,

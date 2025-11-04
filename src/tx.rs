@@ -10,17 +10,17 @@ pub(crate) struct PostCommitWork<H> {
 
 /// Exposes a rusqlite Transaction to implement ReadTransaction.
 pub trait ReadOnlyTransactionAccessor {
-    fn readonly_transaction(&self) -> &rusqlite::Transaction;
+    fn readonly_transaction(&self) -> &rusqlite::Transaction<'_>;
 }
 
 /// Extends rusqlite objects with stuff needed for ReadTransaction.
 trait ReadOnlyRusqliteTransaction {
-    fn prepare_cached_readonly(&self, sql: &str) -> rusqlite::Result<CachedStatement>;
+    fn prepare_cached_readonly(&self, sql: &str) -> rusqlite::Result<CachedStatement<'_>>;
 }
 
 // This could just as easily be implemented for rusqlite::Connection too.
 impl ReadOnlyRusqliteTransaction for rusqlite::Transaction<'_> {
-    fn prepare_cached_readonly(&self, sql: &str) -> rusqlite::Result<CachedStatement> {
+    fn prepare_cached_readonly(&self, sql: &str) -> rusqlite::Result<CachedStatement<'_>> {
         prepare_cached_readonly(self.borrow(), sql)
     }
 }
@@ -40,7 +40,7 @@ pub type ReadTransactionRef<'a> = &'a ReadTransactionOwned<'a>;
 pub struct ReadTransactionOwned<'a>(pub(crate) rusqlite::Transaction<'a>);
 
 impl ReadOnlyTransactionAccessor for ReadTransactionOwned<'_> {
-    fn readonly_transaction(&self) -> &rusqlite::Transaction {
+    fn readonly_transaction(&self) -> &rusqlite::Transaction<'_> {
         &self.0
     }
 }
@@ -48,7 +48,7 @@ impl ReadOnlyTransactionAccessor for ReadTransactionOwned<'_> {
 /// Extra methods for types exposing a rusqlite Transaction that's allowed to do read transaction
 /// stuff.
 pub trait ReadTransaction: ReadOnlyTransactionAccessor {
-    fn file_values(&self, file_id: FileId) -> rusqlite::Result<FileValues<CachedStatement>> {
+    fn file_values(&self, file_id: FileId) -> rusqlite::Result<FileValues<'_, CachedStatement<'_>>> {
         let stmt = self
             .readonly_transaction()
             .prepare_cached_readonly(&format!(
@@ -175,7 +175,7 @@ pub struct Transaction<'h, H> {
 // TODO: Try doing this with a read trait that just requires a rusqlite::Transaction be available.
 
 impl<H> ReadOnlyTransactionAccessor for Transaction<'_, H> {
-    fn readonly_transaction(&self) -> &rusqlite::Transaction {
+    fn readonly_transaction(&self) -> &rusqlite::Transaction<'_> {
         &self.tx
     }
 }

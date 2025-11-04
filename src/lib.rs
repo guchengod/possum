@@ -350,7 +350,7 @@ where
         Ok(())
     }
 
-    pub fn new_value(&mut self) -> BeginWriteValue<H> {
+    pub fn new_value(&mut self) -> BeginWriteValue<'_,H> {
         BeginWriteValue { batch: self }
     }
 

@@ -35,7 +35,7 @@ pub struct Mutex<T>(InnerMutex<T>);
 unsafe impl<T> StableDeref for MutexGuard<'_, T> {}
 
 impl<T> Mutex<T> {
-    pub fn lock(&self) -> LockResult<MutexGuard<T>> {
+    pub fn lock(&self) -> LockResult<MutexGuard<'_,T>> {
         // This is super dumb. There's a map_result in std::sync::poison that I can't get at that
         // does the same thing I think.
         match self.0.lock() {
