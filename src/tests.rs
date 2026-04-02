@@ -1,7 +1,7 @@
 use std::time::*;
 
 use anyhow::Result;
-use rusqlite::TransactionState;
+use rusqlite::{OpenFlags, TransactionBehavior, TransactionState};
 
 use self::test;
 use super::*;
@@ -189,3 +189,86 @@ fn test_sqlite_update_same_value_txn_state() -> Result<()> {
     Ok(())
 }
 
+/// Verify that punch_value does not remove a values file when newer data has been written to it
+/// after the read transaction snapshot was taken. The race: the puncher's snapshot was taken before
+/// the new write was committed, so it sees no live values in the file, acquires the exclusive lock
+/// (which is available because the writer has already released it), and would incorrectly remove
+/// the file — destroying the new data.
+#[test]
+#[cfg(not(miri))]
+fn test_punch_stale_snapshot_no_remove_if_new_data() -> anyhow::Result<()> {
+    let tempdir = test_tempdir("test_punch_stale_snapshot_no_remove_if_new_data")?;
+    let handle = Handle::new(tempdir.path.clone())?;
+    let block_size = handle.block_size() as usize;
+
+    // Write A (one block).
+    let a_value = readable_repeated_bytes(1, block_size);
+    handle.single_write_from(b"a".to_vec(), a_value.as_slice())?;
+
+    // Record A's storage location before deleting it.
+    let items = handle.list_items(b"")?;
+    let a_loc = items
+        .iter()
+        .find(|i| i.key == b"a")
+        .unwrap()
+        .value
+        .location
+        .into_non_zero()
+        .unwrap();
+
+    handle.single_delete(b"a")?;
+
+    // Open a separate read-only connection and begin a deferred transaction, then force a read to
+    // anchor the WAL snapshot. This snapshot sees no live values — A is deleted and B is not yet
+    // written.
+    let manifest_path = handle.dir.path().join(MANIFEST_DB_FILE_NAME);
+    let mut stale_conn = rusqlite::Connection::open_with_flags(
+        manifest_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_URI,
+    )?;
+    let stale_tx_inner =
+        stale_conn.transaction_with_behavior(TransactionBehavior::Deferred)?;
+    let stale_tx = ReadTransactionOwned(stale_tx_inner);
+    // Force the snapshot to be taken now (deferred transactions snapshot on first read).
+    let _ = stale_tx.sum_value_length()?;
+
+    // Write B — this reuses the same ExclusiveFile from the pool, placing B in the same file.
+    let b_value = readable_repeated_bytes(2, block_size);
+    handle.single_write_from(b"b".to_vec(), b_value.as_slice())?;
+
+    // Confirm B landed in the same file as A.
+    let items = handle.list_items(b"")?;
+    let b_loc = items
+        .iter()
+        .find(|i| i.key == b"b")
+        .unwrap()
+        .value
+        .location
+        .into_non_zero()
+        .unwrap();
+    assert_eq!(
+        b_loc.file_id, a_loc.file_id,
+        "B should reuse A's values file"
+    );
+
+    // Release the exclusive-file lock so that lock_max_segment can succeed in punch_value.
+    handle.exclusive_files.lock().unwrap().clear();
+
+    // Punch A using the stale snapshot. punch_value will see no live values in the file and
+    // acquire the whole-file lock — it must NOT remove the file because B is committed there.
+    Handle::punch_values(&handle.dir, vec![a_loc], &stale_tx)?;
+
+    // The file must still exist.
+    let vfile_path = file_path(handle.dir.path(), &a_loc.file_id);
+    assert!(vfile_path.exists(), "values file was incorrectly removed");
+
+    // B must still be readable with the correct content.
+    assert_repeated_bytes_values_eq(
+        handle.read_single(b"b").unwrap().unwrap().new_reader(),
+        b_value.as_slice(),
+    );
+
+    Ok(())
+}
