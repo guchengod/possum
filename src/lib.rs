@@ -845,16 +845,24 @@ fn punch_value(opts: PunchValueOptions) -> Result<bool> {
                 // Get the file length after we have tried locking the file.
                 let file_end = file.seek(End(0))? as i64;
                 if locked_file {
-                    // I think it's okay to remove and truncate files if cloning doesn't use locks,
-                    // because there are no values in this file to clone.
-                    if offset == 0 && allow_remove {
-                        remove_file(file_path).context("removing value file")?;
-                        return Ok(true);
-                    } else if allow_truncate {
-                        file.set_len(offset as u64)?;
-                        return Ok(true);
+                    // The punch region ends at offset+length; anything beyond that is new data
+                    // committed after our snapshot was taken. Only remove/truncate if the file has
+                    // not grown past the region we are punching.
+                    let punch_end = offset + length;
+                    if file_end <= punch_end {
+                        // I think it's okay to remove and truncate files if cloning doesn't use
+                        // locks, because there are no values in this file to clone.
+                        if offset == 0 && allow_remove {
+                            remove_file(file_path).context("removing value file")?;
+                            return Ok(true);
+                        } else if allow_truncate {
+                            file.set_len(offset as u64)?;
+                            return Ok(true);
+                        }
                     }
-                    file_end
+                    // New data exists beyond our region; punch only up to the block boundary of
+                    // the deleted value's end.
+                    floored_multiple(punch_end, block_size)
                 } else if cloning_lock_aware {
                     // Round the punch region down the beginning of the last block. We aren't sure
                     // if someone is writing to the file.
