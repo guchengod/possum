@@ -188,3 +188,4 @@ fn test_sqlite_update_same_value_txn_state() -> Result<()> {
     assert_eq!(tx.transaction_state(None)?, TransactionState::Write);
     Ok(())
 }
+

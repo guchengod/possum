@@ -17,7 +17,7 @@ type DeletedValuesSender = sync::mpsc::SyncSender<Vec<NonzeroValueLocation>>;
 #[derive(Debug)]
 pub struct Handle {
     pub(crate) conn: Mutex<Connection>,
-    pub(crate) exclusive_files: Mutex<HashMap<FileId, ExclusiveFile>>,
+    pub(crate) exclusive_files: Mutex<Vec<ExclusiveFile>>,
     pub(crate) dir: Dir,
     pub(crate) clones: Mutex<FileCloneCache>,
     pub(crate) instance_limits: Limits,
@@ -47,11 +47,7 @@ impl Handle {
     pub(crate) fn get_exclusive_file(&self) -> Result<ExclusiveFile> {
         {
             let mut files = self.exclusive_files.lock().unwrap();
-            // How do we avoid cloning the key and skipping the unnecessary remove check? Do we need a
-            // pop method on HashMap?
-            if let Some(id) = files.keys().next().cloned() {
-                let file = files.remove(&id).unwrap();
-                debug_assert_eq!(id, file.id);
+            if let Some(file) = files.pop() {
                 debug!("using exclusive file {} from handle", &file.id);
                 return Ok(file);
             }

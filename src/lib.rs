@@ -410,7 +410,7 @@ where
             let mut handle_exclusive_files = handle.exclusive_files.lock().unwrap();
             for ef in self.exclusive_files.drain(..) {
                 debug!("returning exclusive file {} to handle", ef.id);
-                assert!(handle_exclusive_files.insert(ef.id, ef).is_none());
+                handle_exclusive_files.push(ef);
             }
         })
     }
