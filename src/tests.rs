@@ -272,3 +272,76 @@ fn test_punch_stale_snapshot_no_remove_if_new_data() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// Verify that the FileClone cache is cleaned up when punch_value removes a values file. Stale
+/// cache entries would cause readers to mmap a deleted (and potentially reused) file.
+#[test]
+#[cfg(not(miri))]
+fn test_clone_cache_cleaned_on_file_removal() -> anyhow::Result<()> {
+    let tempdir = test_tempdir("test_clone_cache_cleaned_on_file_removal")?;
+    let handle = Handle::new(tempdir.path.clone())?;
+    let block_size = handle.block_size() as usize;
+
+    // Write A (one block).
+    let a_value = readable_repeated_bytes(1, block_size);
+    handle.single_write_from(b"a".to_vec(), a_value.as_slice())?;
+
+    // Record A's storage location before deleting it.
+    let items = handle.list_items(b"")?;
+    let a_loc = items
+        .iter()
+        .find(|i| i.key == b"a")
+        .unwrap()
+        .value
+        .location
+        .into_non_zero()
+        .unwrap();
+
+    // Insert a fake FileClone entry so we can check it gets cleaned up when the file is removed.
+    let vfile_path = file_path(handle.dir.path(), &a_loc.file_id);
+    let file = File::open(&vfile_path)?;
+    handle.clones.lock().unwrap().insert(
+        a_loc.file_id,
+        Arc::new(Mutex::new(FileClone {
+            file,
+            tempdir: None,
+            mmap: None,
+            len: a_loc.length,
+        })),
+    );
+
+    // Delete A from the manifest. Use a manual transaction and drop PostCommitWork without
+    // calling complete() so the value_puncher is not notified and cannot race with us.
+    {
+        let mut tx = handle.start_deferred_transaction()?;
+        tx.delete_key(b"a")?;
+        drop(tx.commit()?);
+    }
+
+    // Drain the exclusive-file pool so lock_max_segment can succeed.
+    handle.exclusive_files.lock().unwrap().clear();
+
+    // Open a fresh (non-stale) read-only connection so punch_value sees no live values.
+    let manifest_path = handle.dir.path().join(MANIFEST_DB_FILE_NAME);
+    let mut conn = rusqlite::Connection::open_with_flags(
+        manifest_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_URI,
+    )?;
+    let tx_inner = conn.transaction_with_behavior(TransactionBehavior::Deferred)?;
+    let tx = ReadTransactionOwned(tx_inner);
+
+    Handle::punch_values(&handle.dir, vec![a_loc], &tx)?;
+
+    // The file must have been removed.
+    assert!(!vfile_path.exists(), "values file should have been removed");
+
+    // The clone cache entry for this file must have been cleaned up.
+    assert!(
+        !handle.clones.lock().unwrap().contains_key(&a_loc.file_id),
+        "FileClone cache entry was not removed when the values file was deleted"
+    );
+
+    Ok(())
+}
