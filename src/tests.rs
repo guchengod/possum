@@ -258,7 +258,7 @@ fn test_punch_stale_snapshot_no_remove_if_new_data() -> anyhow::Result<()> {
 
     // Punch A using the stale snapshot. punch_value will see no live values in the file and
     // acquire the whole-file lock — it must NOT remove the file because B is committed there.
-    Handle::punch_values(&handle.dir, vec![a_loc], &stale_tx)?;
+    Handle::punch_values(&handle.dir, None, vec![a_loc], &stale_tx)?;
 
     // The file must still exist.
     let vfile_path = file_path(handle.dir.path(), &a_loc.file_id);
@@ -332,7 +332,7 @@ fn test_clone_cache_cleaned_on_file_removal() -> anyhow::Result<()> {
     let tx_inner = conn.transaction_with_behavior(TransactionBehavior::Deferred)?;
     let tx = ReadTransactionOwned(tx_inner);
 
-    Handle::punch_values(&handle.dir, vec![a_loc], &tx)?;
+    Handle::punch_values(&handle.dir, Some(&handle.clones), vec![a_loc], &tx)?;
 
     // The file must have been removed.
     assert!(!vfile_path.exists(), "values file should have been removed");

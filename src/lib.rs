@@ -791,6 +791,7 @@ struct PunchValueOptions<'a> {
     tx: &'a ReadTransactionOwned<'a>,
     block_size: u64,
     constraints: PunchValueConstraints,
+    clones: Option<&'a Mutex<FileCloneCache>>,
 }
 
 // Can't do this as &mut self for dumb Rust reasons.
@@ -810,6 +811,7 @@ fn punch_value(opts: PunchValueOptions) -> Result<bool> {
                 allow_remove,
                 greedy_end,
             },
+        clones,
     } = opts;
     let cloning_lock_aware = false;
     // Make signed for easier arithmetic.
@@ -853,7 +855,10 @@ fn punch_value(opts: PunchValueOptions) -> Result<bool> {
                         // I think it's okay to remove and truncate files if cloning doesn't use
                         // locks, because there are no values in this file to clone.
                         if offset == 0 && allow_remove {
-                            remove_file(file_path).context("removing value file")?;
+                            remove_file(&file_path).context("removing value file")?;
+                            if let Some(c) = clones {
+                                c.lock().unwrap().remove(file_id);
+                            }
                             return Ok(true);
                         } else if allow_truncate {
                             file.set_len(offset as u64)?;

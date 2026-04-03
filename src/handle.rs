@@ -19,7 +19,7 @@ pub struct Handle {
     pub(crate) conn: Mutex<Connection>,
     pub(crate) exclusive_files: Mutex<Vec<ExclusiveFile>>,
     pub(crate) dir: Dir,
-    pub(crate) clones: Mutex<FileCloneCache>,
+    pub(crate) clones: Arc<Mutex<FileCloneCache>>,
     pub(crate) instance_limits: Limits,
     deleted_values: Option<DeletedValuesSender>,
     _value_puncher: Option<thread::JoinHandle<()>>,
@@ -105,18 +105,19 @@ impl Handle {
         let (deleted_values, receiver) = sync::mpsc::sync_channel(10);
         let (value_puncher_done_sender, value_puncher_done) = sync::mpsc::sync_channel(0);
         let value_puncher_done = ValuePuncherDone(Arc::new(Mutex::new(value_puncher_done)));
+        let clones: Arc<Mutex<FileCloneCache>> = Arc::default();
         let handle = Self {
             conn: Mutex::new(conn),
             exclusive_files: Default::default(),
             dir: dir.clone(),
-            clones: Default::default(),
+            clones: clones.clone(),
             instance_limits: Default::default(),
             deleted_values: Some(deleted_values),
             // Don't wait on this, at least in the Drop handler, because it stays alive until it
             // succeeds in punching everything.
             _value_puncher: Some(thread::spawn(move || -> () {
                 let _value_puncher_done_sender = value_puncher_done_sender;
-                if let Err(err) = Self::value_puncher(dir, receiver) {
+                if let Err(err) = Self::value_puncher(dir, clones, receiver) {
                     error!("value puncher thread failed with {err:?}");
                 }
             })),
@@ -328,6 +329,7 @@ impl Handle {
     /// Punches values in batches with its own dedicated connection and read-only transactions.
     fn value_puncher(
         dir: Dir,
+        clones: Arc<Mutex<FileCloneCache>>,
         values_receiver: sync::mpsc::Receiver<Vec<NonzeroValueLocation>>,
     ) -> Result<()> {
         let manifest_path = dir.path().join(MANIFEST_DB_FILE_NAME);
@@ -372,7 +374,7 @@ impl Handle {
             }
             let tx = conn.transaction_with_behavior(TransactionBehavior::Deferred)?;
             let tx = ReadTransactionOwned(tx);
-            pending_values = Self::punch_values(&dir, pending_values, &tx)?;
+            pending_values = Self::punch_values(&dir, Some(&clones), pending_values, &tx)?;
             debug_assert_ne!(tx.0.transaction_state(None)?, TransactionState::Write);
         }
         Ok(())
@@ -382,6 +384,7 @@ impl Handle {
     /// offsets above the targeted values, ongoing writes should not be affected.
     pub(crate) fn punch_values(
         dir: &Dir,
+        clones: Option<&Mutex<FileCloneCache>>,
         values: Vec<NonzeroValueLocation>,
         transaction: &ReadTransactionOwned,
     ) -> PubResult<Vec<NonzeroValueLocation>> {
@@ -398,7 +401,6 @@ impl Handle {
                 file_id, file_offset, value_length
             );
             debug!("{}", msg);
-            // self.handle.clones.lock().unwrap().remove(&file_id);
             if !punch_value(PunchValueOptions {
                 dir: dir.path(),
                 file_id,
@@ -407,6 +409,7 @@ impl Handle {
                 tx: transaction,
                 block_size: dir.block_size(),
                 constraints: Default::default(),
+                clones,
             })
             .context(msg)?
             {
